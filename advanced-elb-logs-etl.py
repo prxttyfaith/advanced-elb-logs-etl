@@ -240,6 +240,59 @@ def enrich_with_geolocation(df_logs):
     }, inplace=True)
     return df_merged
 
+#  ADVANCED FEATURE ENGINEERING 
+def status_code_type(code):
+    try:
+        code = int(code)
+        if 100 <= code < 200: return '1xx_Informational'
+        if 200 <= code < 300: return '2xx_Success'
+        if 300 <= code < 400: return '3xx_Redirection'
+        if 400 <= code < 500: return '4xx_ClientError'
+        if 500 <= code < 600: return '5xx_ServerError'
+    except: pass
+    return 'Unknown'
+
+def add_advanced_features(df):
+    # Remove rows missing critical fields
+    df = df[~df['client_ip'].isna()]
+    # Clean types
+    df['elb_status_code'] = df['elb_status_code'].apply(to_int)
+    df['target_status_code'] = df['target_status_code'].apply(to_int)
+    df['received_bytes'] = df['received_bytes'].apply(to_int)
+    df['sent_bytes'] = df['sent_bytes'].apply(to_int)
+    df['total_processing_time_ms'] = df['total_processing_time_ms'].astype('float32')
+    # Status type
+    df['status_code_type'] = df['elb_status_code'].apply(status_code_type).astype('category')
+    # Time-based features
+    df['request_year'] = df['time'].dt.year.astype('int16')
+    df['request_month'] = df['time'].dt.month.astype('int8')
+    df['request_day'] = df['time'].dt.day.astype('int8')
+    df['request_hour'] = df['time'].dt.hour.astype('int8')
+    df['request_day_of_week'] = df['time'].dt.day_name()
+    df['request_week_of_year'] = df['time'].dt.isocalendar().week.astype('int8')
+    # Path features
+    df['path_depth'] = df['path'].astype(str).str.count('/')
+    df['path_main_segment'] = df['path'].astype(str).str.split('/').apply(lambda x: x[1] if len(x)>1 else None)
+    # Sessionization (simplified)
+    df = df.sort_values(['client_ip', 'time'])
+    df['prev_time'] = df.groupby('client_ip')['time'].shift(1)
+    df['time_diff_min'] = (df['time'] - df['prev_time']).dt.total_seconds().div(60)
+    df['new_session'] = (df['time_diff_min'] > 30) | df['time_diff_min'].isna()
+    df['session_id'] = (df.groupby('client_ip')['new_session']
+                        .cumsum().astype('int32').astype(str)) + '-' + df['client_ip']
+    # Rolling aggregations (windowed, advanced use: .transform on groupby)
+    df['rolling_5min_req_count'] = (
+        df.groupby('client_ip')
+          .rolling('5T', on='time')['request'].count()
+          .reset_index(level=0, drop=True)
+    )
+    df['rolling_1h_avg_proc_time'] = (
+        df.groupby('client_ip')
+          .rolling('60T', on='time')['total_processing_time_ms'].mean()
+          .reset_index(level=0, drop=True)
+    )
+    return df
+
 def main():
     # Extract log files from S3
     print(f"\nListing ELB log files in s3://{AWS_BUCKET_NAME}/{AWS_LOG_PREFIX}")
@@ -261,13 +314,14 @@ def main():
     print(f"Total records after parsing: {len(df_all)}")
 
     # Show a sample of parsed rows in JSON
-    print("\nSample data (JSON, first 5 rows):")
-    print(df_all.head(5).to_json(orient="records", lines=True))
+    # print("\nSample data (JSON, first 5 rows):")
+    # print(df_all.head(5).to_json(orient="records", lines=True))
     
     # Enrich with geolocation data
     df_enriched = enrich_with_geolocation(df_all)
     
     # Feature engineering / add advanced features
+    df_final = add_advanced_features(df_enriched)
     
     # Load cleaned & enriched logs partitioned by year/month/day/countryCode
     
