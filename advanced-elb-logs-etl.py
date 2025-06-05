@@ -72,8 +72,8 @@ def parse_log_entry(line: str, source_file: str):
         if len(parts) < len(ELB_LOG_COLUMNS):
             return None
         entry = dict(zip(ELB_LOG_COLUMNS, parts))
-        # Parse and enrich 
         
+        # PARSE AND ENRICH LOG ENTRY        
         # Timestamp - convert to Eastern Time
         est_time = None
         for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
@@ -155,6 +155,90 @@ def transform_elb_logs(bucket: str, keys: list):
     df = pd.DataFrame(records)
     return df
 
+# GEOLOCATION ENRICHMENT WITH CACHE 
+def fetch_geolocation(ip):
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,lat,lon,isp,query"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 429:   # Rate limit
+            time.sleep(1)
+            return fetch_geolocation(ip)
+        data = resp.json()
+        if data.get('status') == 'success':
+            data['api_fetch_timestamp'] = pd.Timestamp.now(tz='UTC')
+            return data
+        else:
+            # On error, store minimal info for cache
+            return {
+                'status': 'fail',
+                'message': data.get('message', 'API Error'),
+                'query': ip,
+                'country': None, 'countryCode': None, 'region': None, 'regionName': None,
+                'city': None, 'lat': None, 'lon': None, 'isp': None, 'api_fetch_timestamp': pd.Timestamp.now(tz='UTC')
+            }
+    except Exception as e:
+        return {
+            'status': 'fail', 'message': str(e), 'query': ip, 'country': None, 'countryCode': None, 'region': None,
+            'regionName': None, 'city': None, 'lat': None, 'lon': None, 'isp': None, 'api_fetch_timestamp': pd.Timestamp.now(tz='UTC')
+        }
+
+def load_geo_cache():
+    # Ensure 'query' is in columns so set_index('query') never fails
+    columns = [
+        "status", "message", "country", "countryCode", "region", "regionName", "city",
+        "lat", "lon", "isp", "query", "api_fetch_timestamp"
+    ]
+    if os.path.exists(GEO_CACHE_PATH):
+        df = pd.read_parquet(GEO_CACHE_PATH)
+        if not df.empty:
+            # If 'query' already the index, just return it
+            if df.index.name == "query":
+                return df
+            elif "query" in df.columns:
+                return df.set_index("query")
+            else:
+                # Defensive: create missing column if needed
+                df["query"] = None
+                return df.set_index("query")
+        else:
+            # empty file
+            df = pd.DataFrame(columns=columns)
+            return df.set_index("query")
+    else:
+        df = pd.DataFrame(columns=columns)
+        return df.set_index("query")
+
+def enrich_with_geolocation(df_logs):
+    # Load existing cache
+    geo_cache = load_geo_cache()
+    all_ips = df_logs["client_ip"].dropna().unique()
+    new_ips = [ip for ip in all_ips if ip not in geo_cache.index]
+    # Fetch new IPs
+    new_geo_data = []
+    for ip in new_ips:
+        geo = fetch_geolocation(ip)
+        new_geo_data.append(geo)
+        time.sleep(0.7)
+    if new_geo_data:
+        df_new = pd.DataFrame(new_geo_data).set_index("query")
+        geo_cache = pd.concat([geo_cache, df_new])
+        geo_cache = geo_cache[~geo_cache.index.duplicated(keep='last')]
+        geo_cache.reset_index().to_parquet(GEO_CACHE_PATH, index=False)
+    # Merge
+    geo_cache = geo_cache.reset_index()
+    df_merged = pd.merge(df_logs, geo_cache, left_on="client_ip", right_on="query", how="left", suffixes=("", "_geo"))
+    # Standardize columns for ease
+    df_merged.rename(columns={
+        'country': 'countryName',
+        'countryCode': 'countryCode',
+        'region': 'region',
+        'regionName': 'regionName',
+        'city': 'city',
+        'lat': 'lat',
+        'lon': 'lon',
+        'isp': 'isp'
+    }, inplace=True)
+    return df_merged
 
 def main():
     # Extract log files from S3
@@ -180,14 +264,15 @@ def main():
     print("\nSample data (JSON, first 5 rows):")
     print(df_all.head(5).to_json(orient="records", lines=True))
     
-    
     # Enrich with geolocation data
+    df_enriched = enrich_with_geolocation(df_all)
     
     # Feature engineering / add advanced features
     
     # Load cleaned & enriched logs partitioned by year/month/day/countryCode
     
-    
+if __name__ == "__main__":
+    main()
     
     
    
