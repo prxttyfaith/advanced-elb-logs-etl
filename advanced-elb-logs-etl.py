@@ -308,6 +308,22 @@ def write_cleaned_logs(df):
         out_path = os.path.join(out_dir, "data.parquet")
         group.dropna(axis=1, how='all').to_parquet(out_path, index=False)
 
+def write_hourly_aggregation(df):
+    agg = df.groupby([
+        "request_year", "request_month", "request_day", "request_hour", "countryName", "city"
+    ]).agg(
+        request_count = ("client_ip", "count"),
+        unique_client_ips_count = ("client_ip", "nunique"),
+        average_total_processing_time = ("total_processing_time_ms", "mean"),
+        median_total_processing_time = ("total_processing_time_ms", "median"),
+        sum_sent_bytes = ("sent_bytes", "sum"),
+        sum_received_bytes = ("received_bytes", "sum"),
+        count_2xx = ("status_code_type", lambda x: (x == "2xx_Success").sum()),
+        count_4xx = ("status_code_type", lambda x: (x == "4xx_ClientError").sum()),
+        count_5xx = ("status_code_type", lambda x: (x == "5xx_ServerError").sum()),
+    ).reset_index()
+    out_path = os.path.join(OUTPUT_AGG, "hourly_traffic_by_geo.parquet")
+    agg.to_parquet(out_path, index=False)
 
 def main():
     # Extract log files from S3
@@ -339,8 +355,11 @@ def main():
     # Feature engineering / add advanced features
     df_final = add_advanced_features(df_enriched)
     
-    # Load cleaned & enriched logs partitioned by year/month/day/countryCode
+    # print("Writing cleaned & enriched logs partitioned by year/month/day/countryCode ...")
     write_cleaned_logs(df_final)
+    
+    # print("Writing hourly traffic aggregation ...")
+    # write_hourly_aggregation(df_final)
     
 if __name__ == "__main__":
     main()
