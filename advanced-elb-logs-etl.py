@@ -293,6 +293,22 @@ def add_advanced_features(df):
     )
     return df
 
+# OUTPUT WRITING FUNCTIONS 
+def write_cleaned_logs(df):
+    # Partitioned by year, month, day, countryCode (as required)
+    for (yr, mth, day, cc), group in df.groupby(['request_year', 'request_month', 'request_day', 'countryCode']):
+        out_dir = os.path.join(
+            OUTPUT_CLEANED,
+            f"year={int(yr)}",
+            f"month={int(mth):02d}",
+            f"day={int(day):02d}",
+            f"countryCode={cc if pd.notnull(cc) else 'UNK'}"
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, "data.parquet")
+        group.dropna(axis=1, how='all').to_parquet(out_path, index=False)
+
+
 def main():
     # Extract log files from S3
     print(f"\nListing ELB log files in s3://{AWS_BUCKET_NAME}/{AWS_LOG_PREFIX}")
@@ -324,6 +340,7 @@ def main():
     df_final = add_advanced_features(df_enriched)
     
     # Load cleaned & enriched logs partitioned by year/month/day/countryCode
+    write_cleaned_logs(df_final)
     
 if __name__ == "__main__":
     main()
