@@ -36,10 +36,32 @@ s3 = boto3.client(
     region_name=AWS_REGION
 )
 
+# Uitility / helper function
+def to_int(val):
+    if val == '-' or val == "" or val is None:
+        return None
+    try: return int(val)
+    except: return None
+
+def to_float(val):
+    if val == '-' or val == "" or val is None:
+        return None
+    try: return float(val)
+    except: return None
+
+# EXTRACT: get .gz keys from S3
+def extract_log_keys(bucket, prefix=''):
+    paginator = s3.get_paginator('list_objects_v2')
+    keys = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys += [obj['Key'] for obj in page.get('Contents', []) if obj['Key'].endswith('.gz')]
+    return keys
 
 def main():
     print(f"\nListing ELB log files in s3://{AWS_BUCKET_NAME}/{AWS_LOG_PREFIX}")
     # Extract log files from S3
+    keys = extract_log_keys(AWS_BUCKET_NAME, AWS_LOG_PREFIX)
+    print(f"Found {len(keys)} ELB log file(s).")
     
     # Transform & Parse elb logs
     
