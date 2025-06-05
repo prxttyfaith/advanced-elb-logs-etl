@@ -325,6 +325,27 @@ def write_hourly_aggregation(df):
     out_path = os.path.join(OUTPUT_AGG, "hourly_traffic_by_geo.parquet")
     agg.to_parquet(out_path, index=False)
 
+def write_error_report(df):
+    err_df = df[df["status_code_type"].isin(["4xx_ClientError", "5xx_ServerError"])]
+    cols = [
+        "time", "client_ip", "city", "countryName", "isp",
+        "http_method", "full_url", "elb_status_code", "target_status_code_list",
+        "user_agent", "ua_browser_family", "ua_os_family", "error_reason"
+    ]
+    out_path = os.path.join(OUTPUT_REPORTS, "error_summary_geo.csv")
+    err_df[cols].to_csv(out_path, index=False)
+
+def write_bot_traffic_reports(df):
+    bots = df[df["is_bot"] == True]
+    # Details parquet
+    out_path = os.path.join(OUTPUT_REPORTS, "bot_traffic_details.parquet")
+    bots.to_parquet(out_path, index=False)
+    # Aggregated summary
+    bot_agg = bots.groupby(["countryName", "isp"]).size().reset_index(name="bot_request_count")
+    out_path2 = os.path.join(OUTPUT_REPORTS, "bot_traffic_by_origin_summary.csv")
+    bot_agg.to_csv(out_path2, index=False)
+
+
 def main():
     # Extract log files from S3
     print(f"\nListing ELB log files in s3://{AWS_BUCKET_NAME}/{AWS_LOG_PREFIX}")
@@ -355,15 +376,19 @@ def main():
     # Feature engineering / add advanced features
     df_final = add_advanced_features(df_enriched)
     
-    # print("Writing cleaned & enriched logs partitioned by year/month/day/countryCode ...")
+    print("Writing cleaned & enriched logs partitioned by year/month/day/countryCode ...")
     write_cleaned_logs(df_final)
     
-    # print("Writing hourly traffic aggregation ...")
-    # write_hourly_aggregation(df_final)
+    print("Writing hourly traffic aggregation ...")
+    write_hourly_aggregation(df_final)
+    
+    print("Writing error summary report ...")
+    write_error_report(df_final)
+    
+    print("Writing bot traffic analysis reports ...")
+    write_bot_traffic_reports(df_final)
+    
+    print("\nAll done!\n")
     
 if __name__ == "__main__":
     main()
-    
-    
-   
-    
