@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . . 
 
 # Run the ETL script when the container starts
-CMD ["python", "advanced-elb-logs-etl.py"]
+CMD ["python", "-u", "advanced-elb-logs-etl.py"]
 
 # To build and run this Docker container, use the following commands:
 # docker build -t advanced-elb-logs-etl:latest .

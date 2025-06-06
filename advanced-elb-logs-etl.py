@@ -18,14 +18,14 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_BUCKET_NAME       = os.getenv("AWS_BUCKET_NAME")
 AWS_LOG_PREFIX        = os.getenv("AWS_LOG_PREFIX", "")
 AWS_REGION            = os.getenv("AWS_REGION", "us-west-2")
-GEO_CACHE_PATH        = "ip_geolocation_cache.parquet"
 
 OUTPUT_CLEANED        = "output/cleaned_logs"
 OUTPUT_AGG            = "output/aggregated_stats"
 OUTPUT_REPORTS        = "output/reports"
+GEO_CACHE_PATH        = os.path.join("output", "ip_geolocation_cache.parquet")
 EASTERN               = pytz.timezone("America/New_York")
 
-for folder in [OUTPUT_CLEANED, OUTPUT_AGG, OUTPUT_REPORTS]:
+for folder in [OUTPUT_CLEANED, OUTPUT_AGG, OUTPUT_REPORTS, "output"]:
     os.makedirs(folder, exist_ok=True)
 
 import boto3
