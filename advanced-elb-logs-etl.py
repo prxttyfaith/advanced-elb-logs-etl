@@ -80,7 +80,7 @@ def parse_log_entry(line: str, source_file: str):
             try:
                 dt_naive = datetime.strptime(entry["time"], fmt)
                 dt_utc   = dt_naive.replace(tzinfo=timezone.utc)
-                est_time = dt_utc.astimezone(EASTERN).isoformat()
+                est_time = dt_utc.astimezone(EASTERN)
                 break
             except ValueError:
                 continue
@@ -264,6 +264,7 @@ def add_advanced_features(df):
     # Status type
     df['status_code_type'] = df['elb_status_code'].apply(status_code_type).astype('category')
     # Time-based features
+    df["time"] = pd.to_datetime(df["time"])
     df['request_year'] = df['time'].dt.year.astype('int16')
     df['request_month'] = df['time'].dt.month.astype('int8')
     df['request_day'] = df['time'].dt.day.astype('int8')
@@ -306,6 +307,8 @@ def write_cleaned_logs(df):
         )
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, "data.parquet")
+        group = group.copy()
+        group["time"] = group["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
         group.dropna(axis=1, how='all').to_parquet(out_path, index=False)
 
 def write_hourly_aggregation(df):
@@ -333,10 +336,14 @@ def write_error_report(df):
         "user_agent", "ua_browser_family", "ua_os_family", "error_reason"
     ]
     out_path = os.path.join(OUTPUT_REPORTS, "error_summary_geo.csv")
+    err_df = err_df.copy()
+    err_df["time"] = err_df["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
     err_df[cols].to_csv(out_path, index=False)
 
 def write_bot_traffic_reports(df):
     bots = df[df["is_bot"] == True]
+    bots = bots.copy()
+    bots["time"] = bots["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
     # Details parquet
     out_path = os.path.join(OUTPUT_REPORTS, "bot_traffic_details.parquet")
     bots.to_parquet(out_path, index=False)
@@ -367,13 +374,15 @@ def main():
     print(f"Total records after parsing: {len(df_all)}")
 
     # Show a sample of parsed rows in JSON
-    # print("\nSample data (JSON, first 5 rows):")
-    # print(df_all.head(5).to_json(orient="records", lines=True))
+    print("\nSample data (JSON, first 5 rows):")
+    print(df_all.head(5).to_json(orient="records", lines=True))
     
     # Enrich with geolocation data
+    print("\nEnriching logs with geolocation data ...")
     df_enriched = enrich_with_geolocation(df_all)
     
     # Feature engineering / add advanced features
+    print("Adding advanced features ...")
     df_final = add_advanced_features(df_enriched)
     
     print("Writing cleaned & enriched logs partitioned by year/month/day/countryCode ...")

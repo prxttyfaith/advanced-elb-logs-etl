@@ -18,3 +18,7 @@ COPY . .
 
 # Run the ETL script when the container starts
 CMD ["python", "advanced-elb-logs-etl.py"]
+
+# To build and run this Docker container, use the following commands:
+# docker build -t advanced-elb-logs-etl:latest .
+# docker run --rm advanced-elb-logs-etl:latest
