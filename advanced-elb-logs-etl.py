@@ -18,14 +18,14 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_BUCKET_NAME       = os.getenv("AWS_BUCKET_NAME")
 AWS_LOG_PREFIX        = os.getenv("AWS_LOG_PREFIX", "")
 AWS_REGION            = os.getenv("AWS_REGION", "us-west-2")
-GEO_CACHE_PATH        = "ip_geolocation_cache.parquet"
 
 OUTPUT_CLEANED        = "output/cleaned_logs"
 OUTPUT_AGG            = "output/aggregated_stats"
 OUTPUT_REPORTS        = "output/reports"
+GEO_CACHE_PATH        = os.path.join("output", "ip_geolocation_cache.parquet")
 EASTERN               = pytz.timezone("America/New_York")
 
-for folder in [OUTPUT_CLEANED, OUTPUT_AGG, OUTPUT_REPORTS]:
+for folder in [OUTPUT_CLEANED, OUTPUT_AGG, OUTPUT_REPORTS, "output"]:
     os.makedirs(folder, exist_ok=True)
 
 import boto3
@@ -58,17 +58,7 @@ def to_float(val):
     try: return float(val)
     except: return None
 
-def status_code_type(code):
-    try:
-        code = int(code)
-        if 100 <= code < 200: return '1xx_Informational'
-        if 200 <= code < 300: return '2xx_Success'
-        if 300 <= code < 400: return '3xx_Redirection'
-        if 400 <= code < 500: return '4xx_ClientError'
-        if 500 <= code < 600: return '5xx_ServerError'
-    except: pass
-    return 'Unknown'
-
+# EXTRACT: get .gz keys from S3
 def extract_log_keys(bucket, prefix=''):
     paginator = s3.get_paginator('list_objects_v2')
     keys = []
@@ -82,26 +72,31 @@ def parse_log_entry(line: str, source_file: str):
         if len(parts) < len(ELB_LOG_COLUMNS):
             return None
         entry = dict(zip(ELB_LOG_COLUMNS, parts))
-        # Parse and enrich 
-        ts = None
+        
+        # PARSE AND ENRICH LOG ENTRY        
+        # Timestamp - convert to Eastern Time
+        est_time = None
         for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
             try:
                 dt_naive = datetime.strptime(entry["time"], fmt)
                 dt_utc   = dt_naive.replace(tzinfo=timezone.utc)
-                ts       = dt_utc.astimezone(EASTERN)
+                est_time = dt_utc.astimezone(EASTERN)
                 break
             except ValueError:
                 continue
-        if ts is None: return None
+        if est_time is None: return None
+        entry["time"] = est_time
+        
         # Client IP
         client_ip = entry["client_ip_port"].split(":")[0]
+        
         # Processing times 
         rpt = to_float(entry.get("request_processing_time", None))
         tpt = to_float(entry.get("target_processing_time", None))
         resppt = to_float(entry.get("response_processing_time", None))
         total_ms = None
         if None not in (rpt, tpt, resppt):
-            total_ms = round((rpt + tpt + resppt) * 1000, 3)
+            total_ms = round((rpt + tpt + resppt) * 1000, 3)            
         # Request parse 
         try:
             method, full_url, version = entry["request"].split(" ", 2)
@@ -127,7 +122,6 @@ def parse_log_entry(line: str, source_file: str):
         # --- Compose row ---
         row = dict(entry)
         row.update({
-            "log_timestamp": ts,
             "client_ip": client_ip,
             "http_method": method,
             "full_url": full_url,
@@ -146,7 +140,7 @@ def parse_log_entry(line: str, source_file: str):
         return row
     except Exception:
         return None
-
+    
 def transform_elb_logs(bucket: str, keys: list):
     records = []
     for key in keys:
@@ -189,7 +183,7 @@ def fetch_geolocation(ip):
         }
 
 def load_geo_cache():
-    # Always ensure 'query' is in columns so set_index('query') never fails
+    # Ensure 'query' is in columns so set_index('query') never fails
     columns = [
         "status", "message", "country", "countryCode", "region", "regionName", "city",
         "lat", "lon", "isp", "query", "api_fetch_timestamp"
@@ -224,7 +218,7 @@ def enrich_with_geolocation(df_logs):
     for ip in new_ips:
         geo = fetch_geolocation(ip)
         new_geo_data.append(geo)
-        time.sleep(0.7)  # throttle to respect free API rate limits
+        time.sleep(0.7)
     if new_geo_data:
         df_new = pd.DataFrame(new_geo_data).set_index("query")
         geo_cache = pd.concat([geo_cache, df_new])
@@ -247,6 +241,17 @@ def enrich_with_geolocation(df_logs):
     return df_merged
 
 #  ADVANCED FEATURE ENGINEERING 
+def status_code_type(code):
+    try:
+        code = int(code)
+        if 100 <= code < 200: return '1xx_Informational'
+        if 200 <= code < 300: return '2xx_Success'
+        if 300 <= code < 400: return '3xx_Redirection'
+        if 400 <= code < 500: return '4xx_ClientError'
+        if 500 <= code < 600: return '5xx_ServerError'
+    except: pass
+    return 'Unknown'
+
 def add_advanced_features(df):
     # Remove rows missing critical fields
     df = df[~df['client_ip'].isna()]
@@ -259,31 +264,32 @@ def add_advanced_features(df):
     # Status type
     df['status_code_type'] = df['elb_status_code'].apply(status_code_type).astype('category')
     # Time-based features
-    df['request_year'] = df['log_timestamp'].dt.year.astype('int16')
-    df['request_month'] = df['log_timestamp'].dt.month.astype('int8')
-    df['request_day'] = df['log_timestamp'].dt.day.astype('int8')
-    df['request_hour'] = df['log_timestamp'].dt.hour.astype('int8')
-    df['request_day_of_week'] = df['log_timestamp'].dt.day_name()
-    df['request_week_of_year'] = df['log_timestamp'].dt.isocalendar().week.astype('int8')
+    df["time"] = pd.to_datetime(df["time"])
+    df['request_year'] = df['time'].dt.year.astype('int16')
+    df['request_month'] = df['time'].dt.month.astype('int8')
+    df['request_day'] = df['time'].dt.day.astype('int8')
+    df['request_hour'] = df['time'].dt.hour.astype('int8')
+    df['request_day_of_week'] = df['time'].dt.day_name()
+    df['request_week_of_year'] = df['time'].dt.isocalendar().week.astype('int8')
     # Path features
     df['path_depth'] = df['path'].astype(str).str.count('/')
     df['path_main_segment'] = df['path'].astype(str).str.split('/').apply(lambda x: x[1] if len(x)>1 else None)
     # Sessionization (simplified)
-    df = df.sort_values(['client_ip', 'log_timestamp'])
-    df['prev_time'] = df.groupby('client_ip')['log_timestamp'].shift(1)
-    df['time_diff_min'] = (df['log_timestamp'] - df['prev_time']).dt.total_seconds().div(60)
+    df = df.sort_values(['client_ip', 'time'])
+    df['prev_time'] = df.groupby('client_ip')['time'].shift(1)
+    df['time_diff_min'] = (df['time'] - df['prev_time']).dt.total_seconds().div(60)
     df['new_session'] = (df['time_diff_min'] > 30) | df['time_diff_min'].isna()
     df['session_id'] = (df.groupby('client_ip')['new_session']
                         .cumsum().astype('int32').astype(str)) + '-' + df['client_ip']
     # Rolling aggregations (windowed, advanced use: .transform on groupby)
     df['rolling_5min_req_count'] = (
         df.groupby('client_ip')
-          .rolling('5T', on='log_timestamp')['request'].count()
+          .rolling('5T', on='time')['request'].count()
           .reset_index(level=0, drop=True)
     )
     df['rolling_1h_avg_proc_time'] = (
         df.groupby('client_ip')
-          .rolling('60T', on='log_timestamp')['total_processing_time_ms'].mean()
+          .rolling('60T', on='time')['total_processing_time_ms'].mean()
           .reset_index(level=0, drop=True)
     )
     return df
@@ -301,6 +307,8 @@ def write_cleaned_logs(df):
         )
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, "data.parquet")
+        group = group.copy()
+        group["time"] = group["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
         group.dropna(axis=1, how='all').to_parquet(out_path, index=False)
 
 def write_hourly_aggregation(df):
@@ -323,15 +331,19 @@ def write_hourly_aggregation(df):
 def write_error_report(df):
     err_df = df[df["status_code_type"].isin(["4xx_ClientError", "5xx_ServerError"])]
     cols = [
-        "log_timestamp", "client_ip", "city", "countryName", "isp",
+        "time", "client_ip", "city", "countryName", "isp",
         "http_method", "full_url", "elb_status_code", "target_status_code_list",
         "user_agent", "ua_browser_family", "ua_os_family", "error_reason"
     ]
     out_path = os.path.join(OUTPUT_REPORTS, "error_summary_geo.csv")
+    err_df = err_df.copy()
+    err_df["time"] = err_df["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
     err_df[cols].to_csv(out_path, index=False)
 
 def write_bot_traffic_reports(df):
     bots = df[df["is_bot"] == True]
+    bots = bots.copy()
+    bots["time"] = bots["time"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
     # Details parquet
     out_path = os.path.join(OUTPUT_REPORTS, "bot_traffic_details.parquet")
     bots.to_parquet(out_path, index=False)
@@ -340,37 +352,52 @@ def write_bot_traffic_reports(df):
     out_path2 = os.path.join(OUTPUT_REPORTS, "bot_traffic_by_origin_summary.csv")
     bot_agg.to_csv(out_path2, index=False)
 
-# MAIN 
+
 def main():
+    # Extract log files from S3
     print(f"\nListing ELB log files in s3://{AWS_BUCKET_NAME}/{AWS_LOG_PREFIX}")
     keys = extract_log_keys(AWS_BUCKET_NAME, AWS_LOG_PREFIX)
     if not keys:
         print("No .gz files found. Exiting.")
         return
     print(f"Found {len(keys)} ELB log file(s).")
-
+    
+    # Transform & Parse elb logs
     df_list = []
     for key in keys:
         print(f"Parsing: s3://{AWS_BUCKET_NAME}/{key}")
         df_parsed = transform_elb_logs(AWS_BUCKET_NAME, [key])
+        print(f"Parsed {len(df_parsed)} records from {key}")
         df_list.append(df_parsed)
+        print(f"Total records so far: {len(df_list)}")
     df_all = pd.concat(df_list, ignore_index=True)
     print(f"Total records after parsing: {len(df_all)}")
 
-    # Enrich with geolocation
+    # Show a sample of parsed rows in JSON
+    print("\nSample data (JSON, first 5 rows):")
+    print(df_all.head(5).to_json(orient="records", lines=True))
+    
+    # Enrich with geolocation data
+    print("\nEnriching logs with geolocation data ...")
     df_enriched = enrich_with_geolocation(df_all)
-    # Add advanced features
+    
+    # Feature engineering / add advanced features
+    print("Adding advanced features ...")
     df_final = add_advanced_features(df_enriched)
-
+    
     print("Writing cleaned & enriched logs partitioned by year/month/day/countryCode ...")
     write_cleaned_logs(df_final)
+    
     print("Writing hourly traffic aggregation ...")
     write_hourly_aggregation(df_final)
+    
     print("Writing error summary report ...")
     write_error_report(df_final)
+    
     print("Writing bot traffic analysis reports ...")
     write_bot_traffic_reports(df_final)
+    
     print("\nAll done!\n")
-
+    
 if __name__ == "__main__":
     main()
