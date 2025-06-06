@@ -20,5 +20,5 @@ COPY . .
 CMD ["python", "-u", "advanced-elb-logs-etl.py"]
 
 # To build and run this Docker container, use the following commands:
-# docker build -t advanced-elb-logs-etl:latest .
-# docker run --rm -v $(pwd)/output:/app/output advanced-elb-logs-etl:latest
+# docker build -t advanced_elb_logs_etl:latest .
+# docker run --rm -v $(pwd)/output:/app/output advanced_elb_logs_etl:latest
